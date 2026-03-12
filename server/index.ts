@@ -170,8 +170,8 @@ server.registerTool(
     const outPath = output ?? path.join(projPath, "flowchart.html");
     const projName = path.basename(projPath);
 
-    const mermaid = await generateFlowchart(projPath);
-    saveFlowchart(mermaid, projName, outPath);
+    const { mermaid, structure, projectRoot } = await generateFlowchart(projPath);
+    saveFlowchart(mermaid, projName, outPath, structure, projectRoot);
 
     return {
       content: [{
