@@ -1,0 +1,34 @@
+{
+  "name": "ai-debate",
+  "version": "1.0.0",
+  "description": "Claude + Gemini AI 토론 MCP 서버",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "ai-debate": "./dist/index.js"
+  },
+  "scripts": {
+    "start": "tsx server/index.ts",
+    "build": "tsc"
+  },
+  "keywords": [
+    "mcp",
+    "claude",
+    "gemini",
+    "debate",
+    "ai"
+  ],
+  "author": "avabag01",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
+    "@google/generative-ai": "^0.24.1",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "tsx": "^4.21.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.37",
+    "typescript": "^5.9.3"
+  }
+}
