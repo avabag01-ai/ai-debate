@@ -5,6 +5,7 @@ import { z } from "zod";
 import * as fs from "fs";
 import * as path from "path";
 import { modeDesign, modeCode, modeDebate, modeSolo, modeGeminiReview } from "./modes.js";
+import { generateFlowchart, saveFlowchart } from "./flowchart.js";
 
 const server = new McpServer({
   name: "ai-debate",
@@ -153,6 +154,48 @@ server.registerTool(
 );
 
 // ════════════════════════════════════════
+// 🗂 플로우차트
+// ════════════════════════════════════════
+server.registerTool(
+  "flowchart",
+  {
+    description: "프로젝트 구조를 분석해 예쁜 HTML 플로우차트 생성. 브라우저에서 바로 열림.",
+    inputSchema: {
+      project_path: z.string().describe("분석할 프로젝트 경로"),
+      output: z.string().optional().describe("저장 경로 (기본: 프로젝트/flowchart.html)"),
+    },
+  },
+  async ({ project_path, output }) => {
+    const projPath = project_path ?? process.cwd();
+    const outPath = output ?? path.join(projPath, "flowchart.html");
+    const projName = path.basename(projPath);
+
+    const mermaid = await generateFlowchart(projPath);
+    saveFlowchart(mermaid, projName, outPath);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: [
+          `✅ 플로우차트 생성 완료`,
+          `📁 프로젝트: ${projPath}`,
+          `💾 저장 위치: ${outPath}`,
+          ``,
+          `브라우저에서 열기:`,
+          `  open "${outPath}"`,
+          ``,
+          `---`,
+          `Mermaid 소스:`,
+          "```mermaid",
+          mermaid,
+          "```",
+        ].join("\n"),
+      }],
+    };
+  }
+);
+
+// ════════════════════════════════════════
 // 📋 메뉴
 // ════════════════════════════════════════
 server.registerTool(
@@ -160,7 +203,7 @@ server.registerTool(
   { description: "ai-debate 사용 가능한 모드와 옵션 목록 표시.", inputSchema: {} },
   async () => {
     const menu = `
-🧠 ai-debate v2.0 — Claude + Gemini 토론 MCP
+🧠 ai-debate v2.2 — Claude + Gemini 토론 MCP
 ${"═".repeat(50)}
 
 📋 모드:
@@ -180,6 +223,10 @@ ${"═".repeat(50)}
   🎯 ask     — 빠른 질문 비교
      같은 질문을 두 AI에게 동시에
      예: ask question="오버피팅 어떻게 막아?" ai=both
+
+  🗂 flowchart — 프로젝트 플로우차트
+     코드 분석 → HTML 플로우차트 생성 (다크테마)
+     예: flowchart project_path="/Users/mac/Documents/GitHub/ORCA"
 
 ${"─".repeat(50)}
 🤖 AI 조합 옵션:
