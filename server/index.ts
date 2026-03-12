@@ -4,7 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import * as fs from "fs";
 import * as path from "path";
-import { modeDesign, modeCode, modeDebate, modeSolo } from "./modes.js";
+import { modeDesign, modeCode, modeDebate, modeSolo, modeGeminiReview } from "./modes.js";
 
 const server = new McpServer({
   name: "ai-debate",
@@ -43,6 +43,15 @@ function readProjectContext(projectPath: string, maxChars = 8000): string {
 const aiCombo = z.enum(["claude", "gemini", "both"]).default("both").describe("AI 조합: claude / gemini / both");
 const projectPathSchema = z.string().optional().describe("프로젝트 경로 (기본: 현재 디렉토리)");
 
+// claude_prompt 있으면 Claude에게 자동 전달되도록 출력에 포함
+function toOutput(result: { lines: string[]; claude_prompt?: string }): string {
+  const parts = [result.lines.join("\n")];
+  if (result.claude_prompt) {
+    parts.push(`\n${"═".repeat(50)}\n🟠 Claude — 아래 내용으로 응답해줘:\n\n${result.claude_prompt}`);
+  }
+  return parts.join("\n");
+}
+
 // ════════════════════════════════════════
 // 🎨 설계 모드
 // ════════════════════════════════════════
@@ -59,7 +68,7 @@ server.registerTool(
   async ({ topic, ai, project_path }) => {
     const context = readProjectContext(project_path ?? process.cwd());
     const result = await modeDesign(topic, context, ai ?? "both");
-    return { content: [{ type: "text" as const, text: result.lines.join("\n") }] };
+    return { content: [{ type: "text" as const, text: toOutput(result) }] };
   }
 );
 
@@ -79,6 +88,25 @@ server.registerTool(
   async ({ task, ai, project_path }) => {
     const context = readProjectContext(project_path ?? process.cwd());
     const result = await modeCode(task, context, ai ?? "both");
+    return { content: [{ type: "text" as const, text: toOutput(result) }] };
+  }
+);
+
+// ════════════════════════════════════════
+// 🔵 Gemini 코드 리뷰 (Claude 구현 후 붙여넣기)
+// ════════════════════════════════════════
+server.registerTool(
+  "gemini_review",
+  {
+    description: "Claude가 구현한 코드를 Gemini에게 리뷰 요청.",
+    inputSchema: {
+      code: z.string().describe("리뷰 받을 코드"),
+      project_path: projectPathSchema,
+    },
+  },
+  async ({ code, project_path }) => {
+    const context = readProjectContext(project_path ?? process.cwd());
+    const result = await modeGeminiReview(code, context);
     return { content: [{ type: "text" as const, text: result.lines.join("\n") }] };
   }
 );
@@ -89,7 +117,7 @@ server.registerTool(
 server.registerTool(
   "debate",
   {
-    description: "자유 토론 — 라운드제로 두 AI가 주제를 놓고 토론, 최종 합의 도출.",
+    description: "자유 토론 — Gemini 선공 후 Claude에게 반박 프롬프트 전달.",
     inputSchema: {
       topic: z.string().describe("토론 주제"),
       ai: aiCombo,
@@ -100,7 +128,7 @@ server.registerTool(
   async ({ topic, ai, rounds, project_path }) => {
     const context = readProjectContext(project_path ?? process.cwd());
     const result = await modeDebate(topic, context, ai ?? "both", rounds ?? 2);
-    return { content: [{ type: "text" as const, text: result.lines.join("\n") }] };
+    return { content: [{ type: "text" as const, text: toOutput(result) }] };
   }
 );
 
@@ -110,7 +138,7 @@ server.registerTool(
 server.registerTool(
   "ask",
   {
-    description: "빠른 질문 — Claude/Gemini/둘 다에게 질문, 답변 나란히 비교.",
+    description: "빠른 질문 — Gemini 답변 가져오고 Claude에게도 같은 질문 전달.",
     inputSchema: {
       question: z.string().describe("질문"),
       ai: aiCombo,
@@ -120,7 +148,7 @@ server.registerTool(
   async ({ question, ai, project_path }) => {
     const context = readProjectContext(project_path ?? process.cwd());
     const result = await modeSolo(question, context, ai ?? "both");
-    return { content: [{ type: "text" as const, text: result.lines.join("\n") }] };
+    return { content: [{ type: "text" as const, text: toOutput(result) }] };
   }
 );
 
