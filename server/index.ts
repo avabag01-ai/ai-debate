@@ -4,14 +4,14 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import * as fs from "fs";
 import * as path from "path";
-import { runDebate, DebateMessage } from "./debate.js";
+import { modeDesign, modeCode, modeDebate, modeSolo } from "./modes.js";
 
 const server = new McpServer({
   name: "ai-debate",
-  version: "1.0.0",
+  version: "2.0.0",
 });
 
-// 프로젝트 파일 읽기 헬퍼
+// ── 프로젝트 파일 읽기 ──
 function readProjectContext(projectPath: string, maxChars = 8000): string {
   const exts = [".py", ".ts", ".rs", ".md", ".json"];
   const ignore = ["node_modules", ".git", "dist", "__pycache__", ".claude"];
@@ -20,8 +20,7 @@ function readProjectContext(projectPath: string, maxChars = 8000): string {
   function walk(dir: string, depth = 0) {
     if (depth > 3 || context.length > maxChars) return;
     try {
-      const entries = fs.readdirSync(dir);
-      for (const entry of entries) {
+      for (const entry of fs.readdirSync(dir)) {
         if (ignore.some((i) => entry.includes(i))) continue;
         const full = path.join(dir, entry);
         const stat = fs.statSync(full);
@@ -29,8 +28,7 @@ function readProjectContext(projectPath: string, maxChars = 8000): string {
           walk(full, depth + 1);
         } else if (exts.some((e) => entry.endsWith(e))) {
           try {
-            const content = fs.readFileSync(full, "utf-8").slice(0, 2000);
-            context += `\n\n### ${full}\n${content}`;
+            context += `\n\n### ${full}\n${fs.readFileSync(full, "utf-8").slice(0, 2000)}`;
           } catch {}
         }
         if (context.length > maxChars) break;
@@ -42,84 +40,134 @@ function readProjectContext(projectPath: string, maxChars = 8000): string {
   return context.slice(0, maxChars);
 }
 
-// ── Tool: debate ──
-server.tool(
+const aiCombo = z.enum(["claude", "gemini", "both"]).default("both").describe("AI 조합: claude / gemini / both");
+const projectPathSchema = z.string().optional().describe("프로젝트 경로 (기본: 현재 디렉토리)");
+
+// ════════════════════════════════════════
+// 🎨 설계 모드
+// ════════════════════════════════════════
+server.registerTool(
+  "design",
+  {
+    description: "설계 토론 — Gemini 창의적 제안 → Claude 검증/보완. ai=claude/gemini/both 선택 가능.",
+    inputSchema: {
+      topic: z.string().describe("설계 주제 (예: '수상돌기 뉴런 필터 구조')"),
+      ai: aiCombo,
+      project_path: projectPathSchema,
+    },
+  },
+  async ({ topic, ai, project_path }) => {
+    const context = readProjectContext(project_path ?? process.cwd());
+    const result = await modeDesign(topic, context, ai ?? "both");
+    return { content: [{ type: "text" as const, text: result.lines.join("\n") }] };
+  }
+);
+
+// ════════════════════════════════════════
+// 💻 코드 모드
+// ════════════════════════════════════════
+server.registerTool(
+  "code",
+  {
+    description: "코드 구현 — Claude가 작성, Gemini가 리뷰. ai=claude/gemini/both 선택 가능.",
+    inputSchema: {
+      task: z.string().describe("구현할 내용 (예: 'branch_activation 함수')"),
+      ai: aiCombo,
+      project_path: projectPathSchema,
+    },
+  },
+  async ({ task, ai, project_path }) => {
+    const context = readProjectContext(project_path ?? process.cwd());
+    const result = await modeCode(task, context, ai ?? "both");
+    return { content: [{ type: "text" as const, text: result.lines.join("\n") }] };
+  }
+);
+
+// ════════════════════════════════════════
+// ⚔️  토론 모드
+// ════════════════════════════════════════
+server.registerTool(
   "debate",
-  "두 AI(Claude + Gemini)가 주제를 토론합니다. 코드베이스를 컨텍스트로 활용.",
   {
-    topic: z.string().describe("토론 주제"),
-    project_path: z.string().optional().describe("프로젝트 경로 (기본: 현재 디렉토리)"),
-    rounds: z.number().optional().default(2).describe("토론 라운드 수 (기본: 2)"),
+    description: "자유 토론 — 라운드제로 두 AI가 주제를 놓고 토론, 최종 합의 도출.",
+    inputSchema: {
+      topic: z.string().describe("토론 주제"),
+      ai: aiCombo,
+      rounds: z.number().optional().default(2).describe("토론 라운드 수 (기본: 2)"),
+      project_path: projectPathSchema,
+    },
   },
-  async ({ topic, project_path, rounds }) => {
-    const projPath = project_path || process.cwd();
-    const context = readProjectContext(projPath);
-
-    const lines: string[] = [];
-    lines.push(`🧠 AI 토론 시작`);
-    lines.push(`📁 프로젝트: ${projPath}`);
-    lines.push(`💬 주제: ${topic}`);
-    lines.push("─".repeat(50));
-
-    const onMessage = (msg: DebateMessage) => {
-      const icon = msg.role === "claude" ? "🟠 Claude" : msg.role === "gemini" ? "🔵 Gemini" : "⚙️ System";
-      if (msg.round > 0) lines.push(`\n[Round ${msg.round}] ${icon}:`);
-      else lines.push(`\n${icon}:`);
-      lines.push(msg.content);
-      lines.push("─".repeat(50));
-    };
-
-    try {
-      await runDebate(topic, context, rounds ?? 2, onMessage);
-    } catch (e: any) {
-      lines.push(`\n❌ 에러: ${e.message}`);
-    }
-
-    return {
-      content: [{ type: "text", text: lines.join("\n") }],
-    };
+  async ({ topic, ai, rounds, project_path }) => {
+    const context = readProjectContext(project_path ?? process.cwd());
+    const result = await modeDebate(topic, context, ai ?? "both", rounds ?? 2);
+    return { content: [{ type: "text" as const, text: result.lines.join("\n") }] };
   }
 );
 
-// ── Tool: quick_ask ──
-server.tool(
-  "quick_ask",
-  "Claude와 Gemini 둘 다에게 같은 질문을 해서 답변을 비교합니다.",
+// ════════════════════════════════════════
+// 🎯 빠른 질문
+// ════════════════════════════════════════
+server.registerTool(
+  "ask",
   {
-    question: z.string().describe("질문"),
-    project_path: z.string().optional().describe("프로젝트 경로"),
+    description: "빠른 질문 — Claude/Gemini/둘 다에게 질문, 답변 나란히 비교.",
+    inputSchema: {
+      question: z.string().describe("질문"),
+      ai: aiCombo,
+      project_path: projectPathSchema,
+    },
   },
-  async ({ question, project_path }) => {
-    const projPath = project_path || process.cwd();
-    const context = readProjectContext(projPath);
-
-    const { askClaude } = await import("./claude.js");
-    const { askGemini } = await import("./gemini.js");
-
-    const [claudeResp, geminiResp] = await Promise.all([
-      askClaude(question, context),
-      askGemini(question, context),
-    ]);
-
-    const lines = [
-      `❓ 질문: ${question}`,
-      "─".repeat(50),
-      `\n🟠 Claude:\n${claudeResp}`,
-      "─".repeat(50),
-      `\n🔵 Gemini:\n${geminiResp}`,
-    ];
-
-    return {
-      content: [{ type: "text", text: lines.join("\n") }],
-    };
+  async ({ question, ai, project_path }) => {
+    const context = readProjectContext(project_path ?? process.cwd());
+    const result = await modeSolo(question, context, ai ?? "both");
+    return { content: [{ type: "text" as const, text: result.lines.join("\n") }] };
   }
 );
 
-// 서버 시작
+// ════════════════════════════════════════
+// 📋 메뉴
+// ════════════════════════════════════════
+server.registerTool(
+  "menu",
+  { description: "ai-debate 사용 가능한 모드와 옵션 목록 표시.", inputSchema: {} },
+  async () => {
+    const menu = `
+🧠 ai-debate v2.0 — Claude + Gemini 토론 MCP
+${"═".repeat(50)}
+
+📋 모드:
+
+  🎨 design  — 설계 토론
+     Gemini 창의적 제안 → Claude 검증/최종 설계
+     예: design topic="수상돌기 뉴런 구조" ai=both
+
+  💻 code    — 코드 구현 + 리뷰
+     Claude 구현 → Gemini 코드 리뷰
+     예: code task="branch_activation 함수" ai=both
+
+  ⚔️  debate  — 자유 토론 (라운드제)
+     두 AI가 라운드제 토론 → 합의 도출
+     예: debate topic="A필터 vs B전체담당" rounds=3
+
+  🎯 ask     — 빠른 질문 비교
+     같은 질문을 두 AI에게 동시에
+     예: ask question="오버피팅 어떻게 막아?" ai=both
+
+${"─".repeat(50)}
+🤖 AI 조합 옵션:
+  claude  — Claude만
+  gemini  — Gemini만
+  both    — 둘 다 (기본값)
+${"═".repeat(50)}
+`.trim();
+    return { content: [{ type: "text" as const, text: menu }] };
+  }
+);
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("ai-debate MCP server running");
+  console.error("ai-debate MCP server v2.0 running");
 }
 
 main().catch(console.error);
